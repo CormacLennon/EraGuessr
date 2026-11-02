@@ -44,6 +44,44 @@ const RATINGS = [
 
 const ratingEmoji = (points: number) => RATINGS.find((r) => points >= r.minPoints)!.emoji
 
+// Each app's own "share this text" link. encodeURIComponent rather than URLSearchParams, which writes spaces as
+// "+" that mail and SMS apps show literally.
+const query = (params: Record<string, string>) =>
+  Object.entries(params).map(([key, value]) => `${key}=${encodeURIComponent(value)}`).join('&')
+const SHARE_TARGETS: { name: string; link: (text: string) => string }[] = [
+  { name: 'WhatsApp', link: (text) => `https://wa.me/?${query({ text })}` },
+  // Telegram shows the url parameter itself, so drop the URL line from the text to avoid it appearing twice.
+  {
+    name: 'Telegram',
+    link: (text) =>
+      `https://t.me/share/url?${query({ url: `https://${SHARE_URL}`, text: text.replace(`\n${SHARE_URL}`, '') })}`,
+  },
+  { name: 'X', link: (text) => `https://x.com/intent/post?${query({ text })}` },
+  { name: 'Messages', link: (text) => `sms:?&${query({ body: text })}` },
+  { name: 'Email', link: (text) => `mailto:?${query({ subject: 'My EraGuessr score', body: text })}` },
+]
+
+function renderShareLinks(container: HTMLElement, text: string) {
+  const links = SHARE_TARGETS.map(({ name, link }) => {
+    const anchor = document.createElement('a')
+    anchor.href = link(text)
+    anchor.target = '_blank'
+    anchor.rel = 'noopener noreferrer'
+    anchor.textContent = name
+    return anchor
+  })
+  // The device's own share sheet (phones, some desktop browsers) covers every other app.
+  if (typeof navigator.share === 'function') {
+    const more = document.createElement('button')
+    more.type = 'button'
+    more.textContent = 'More…'
+    more.addEventListener('click', () => navigator.share({ text }).catch(() => {}))
+    container.replaceChildren(...links, more)
+  } else {
+    container.replaceChildren(...links)
+  }
+}
+
 function shareText(results: RoundResult[], total: number): string {
   const points = results.reduce((sum, r) => sum + r.points, 0)
   return `${results.map((r) => ratingEmoji(r.points)).join('')}\nScore: ${points}/${total * 1000}\n${SHARE_URL}`
@@ -71,12 +109,14 @@ function saveResults(day: string, results: RoundResult[]) {
 }
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
-<header>
+<div id="map" aria-label="Historical world map"></div>
+<header id="topbar" class="card">
   <h1>EraGuessr</h1>
-  <p id="prompt">Loading today's maps…</p>
+  <span id="progress"></span>
+  <button id="help" type="button" aria-label="How to play">?</button>
 </header>
-<main>
-  <div id="map" aria-label="Historical world map"></div>
+<section id="panel" class="card">
+  <p id="prompt">Loading today's maps…</p>
   <form id="guess" hidden>
     <label id="month-field">Month
       <select name="month">
@@ -84,31 +124,84 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
       </select>
     </label>
     <label>Year (AD)
-      <input name="year" type="number" required />
+      <input name="year" type="number" inputmode="numeric" required />
     </label>
-    <button type="submit">Guess</button>
+    <button type="submit" class="primary">Guess</button>
   </form>
   <p id="status" role="status"></p>
-  <button id="next" type="button" hidden>Next map</button>
-  <div id="share" hidden>
-    <textarea id="share-text" readonly rows="3" aria-label="Your score to share"></textarea>
-    <button id="share-button" type="button">Copy score</button>
+  <button id="next" type="button" class="primary" hidden>Next map</button>
+  <button id="show-results" type="button" class="primary" hidden>See your score</button>
+</section>
+<dialog id="intro" aria-labelledby="intro-title">
+  <h2 id="intro-title">EraGuessr</h2>
+  <p>Every day, everyone gets the same 5 world maps, each from a moment between 1 AD and 2024.</p>
+  <ul>
+    <li>Guess the year each map shows. Maps from 1886 on ask for the month too.</li>
+    <li>One guess per map. Up to 1,000 points each: the closer, the more you score.</li>
+    <li>Zoom and pan to look for clues in the borders and names.</li>
+    <li>New maps every day at midnight UTC.</li>
+  </ul>
+  <button id="intro-close" type="button" class="primary" autofocus>Play</button>
+</dialog>
+<dialog id="results" aria-labelledby="results-title">
+  <h2 id="results-title">Today's score</h2>
+  <p id="total"></p>
+  <ol id="history"></ol>
+  <textarea id="share-text" readonly rows="3" aria-label="Your score to share"></textarea>
+  <div class="row">
+    <button id="share-button" type="button" class="primary">Copy score</button>
     <span id="share-status" role="status"></span>
   </div>
-  <ol id="history"></ol>
-</main>
+  <nav id="share-links" aria-label="Share your score"></nav>
+  <p class="muted">New maps tomorrow at midnight UTC.</p>
+  <button id="results-close" type="button">Close</button>
+</dialog>
 `
 
 const prompt = document.querySelector<HTMLParagraphElement>('#prompt')!
+const progress = document.querySelector<HTMLSpanElement>('#progress')!
 const form = document.querySelector<HTMLFormElement>('#guess')!
 const monthField = document.querySelector<HTMLLabelElement>('#month-field')!
 const yearInput = form.querySelector<HTMLInputElement>('input[name=year]')!
 const status = document.querySelector<HTMLParagraphElement>('#status')!
 const nextButton = document.querySelector<HTMLButtonElement>('#next')!
+const showResultsButton = document.querySelector<HTMLButtonElement>('#show-results')!
+const intro = document.querySelector<HTMLDialogElement>('#intro')!
+const resultsDialog = document.querySelector<HTMLDialogElement>('#results')!
+const totalScore = document.querySelector<HTMLParagraphElement>('#total')!
 const history = document.querySelector<HTMLOListElement>('#history')!
-const share = document.querySelector<HTMLDivElement>('#share')!
 const shareTextArea = document.querySelector<HTMLTextAreaElement>('#share-text')!
 const shareStatus = document.querySelector<HTMLSpanElement>('#share-status')!
+const shareLinks = document.querySelector<HTMLElement>('#share-links')!
+
+// Dialogs close on their button, on Escape (built in) and on a tap outside them.
+for (const dialog of [intro, resultsDialog]) {
+  dialog.addEventListener('click', (event) => {
+    if (event.target === dialog) dialog.close()
+  })
+}
+document.querySelector<HTMLButtonElement>('#intro-close')!.addEventListener('click', () => intro.close())
+document.querySelector<HTMLButtonElement>('#results-close')!.addEventListener('click', () => resultsDialog.close())
+document.querySelector<HTMLButtonElement>('#help')!.addEventListener('click', () => intro.showModal())
+showResultsButton.addEventListener('click', () => resultsDialog.showModal())
+
+// Show the rules automatically only until the player has dismissed them once.
+const INTRO_SEEN_KEY = 'eraguessr:intro-seen'
+intro.addEventListener('close', () => {
+  try {
+    localStorage.setItem(INTRO_SEEN_KEY, '1')
+  } catch {
+    // They'll just see the rules again next time.
+  }
+})
+function introSeen(): boolean {
+  try {
+    return localStorage.getItem(INTRO_SEEN_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+if (!introSeen()) intro.showModal()
 
 document.querySelector<HTMLButtonElement>('#share-button')!.addEventListener('click', async () => {
   try {
@@ -184,10 +277,11 @@ function createMap(): Promise<MapLibreMap> {
       ],
     },
   })
-  map.addControl(new NavigationControl({ showCompass: false }))
+  map.addControl(new NavigationControl({ showCompass: false }), 'top-right')
+  // Top right with the zoom buttons, clear of the guess panel at the bottom.
   map.addControl(
     new AttributionControl({
-      compact: false,
+      compact: true,
       customAttribution: [
         'Borders: <a href="https://github.com/Seshat-Global-History-Databank/cliopatria">Cliopatria</a> (Seshat), ' +
           '<a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>, simplified',
@@ -195,8 +289,17 @@ function createMap(): Promise<MapLibreMap> {
         'Land: <a href="https://www.naturalearthdata.com/">Natural Earth</a>',
       ],
     }),
+    'top-right',
   )
-  return new Promise((resolve) => map.on('load', () => resolve(map)))
+  return new Promise((resolve) =>
+    map.on('load', () => {
+      // Fit the inhabited world between the top bar and the guess panel, whatever the screen shape.
+      map.fitBounds([[-170, -50], [180, 75]], { padding: { top: 70, bottom: 170, left: 10, right: 10 }, animate: false })
+      // MapLibre opens the compact attribution at first; start it collapsed behind its (i) button.
+      map.getContainer().querySelector('.maplibregl-ctrl-attrib')?.classList.remove('maplibregl-compact-show')
+      resolve(map)
+    }),
+  )
 }
 
 function describe(result: RoundResult, precision: Precision): string {
@@ -212,7 +315,7 @@ async function start() {
   const results = loadResults(daily.day)
   const map = await createMap()
   const source = (id: string) => map.getSource<GeoJSONSource>(id)!
-  const total = daily.rounds.length
+  const rounds = daily.rounds.length
   yearInput.min = String(daily.minYear)
   yearInput.max = String(daily.maxYear)
 
@@ -229,13 +332,18 @@ async function start() {
     const index = results.length
     renderHistory()
     nextButton.hidden = true
-    if (index >= total) {
+    if (index >= rounds) {
+      // The last map stays on screen behind the results popup.
       const points = results.reduce((sum, r) => sum + r.points, 0)
       form.hidden = true
-      prompt.textContent = `That's today's ${total} maps done.`
-      status.textContent = `Total: ${points} of ${total * 1000} points. New maps tomorrow (UTC).`
-      shareTextArea.value = shareText(results, total)
-      share.hidden = false
+      progress.textContent = 'Done'
+      prompt.textContent = `That's today's ${rounds} maps done: ${points} of ${rounds * 1000} points.`
+      status.textContent = ''
+      totalScore.textContent = `${points} of ${rounds * 1000} points`
+      shareTextArea.value = shareText(results, rounds)
+      renderShareLinks(shareLinks, shareTextArea.value)
+      showResultsButton.hidden = false
+      if (!intro.open) resultsDialog.showModal()
       return
     }
     const { precision, map: layers } = daily.rounds[index]
@@ -243,9 +351,8 @@ async function start() {
     source('groups').setData(layers.groups)
     source('labels').setData(layers.labels)
     monthField.hidden = precision !== 'month'
-    prompt.textContent = `Map ${index + 1} of ${total}: when is it from? ` +
-      (precision === 'month' ? 'Guess the month and year' : 'Guess the year') +
-      ` (${daily.minYear}–${daily.maxYear} AD). One guess per map.`
+    progress.textContent = `Map ${index + 1}/${rounds}`
+    prompt.textContent = precision === 'month' ? 'When is this map from? Guess the month and year.' : 'When is this map from? Guess the year.'
     status.textContent = ''
     form.reset()
     form.hidden = false
@@ -269,7 +376,7 @@ async function start() {
       renderHistory()
       form.hidden = true
       status.textContent = describe(results[index], precision)
-      nextButton.textContent = index + 1 < total ? 'Next map' : 'See total'
+      nextButton.textContent = index + 1 < rounds ? 'Next map' : 'See your score'
       nextButton.hidden = false
     } catch (error) {
       status.textContent = error instanceof Error ? error.message : 'Something went wrong'
