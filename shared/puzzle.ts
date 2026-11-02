@@ -14,13 +14,14 @@ export interface RoundMap {
 }
 
 export interface Round {
-  precision: Precision
+  precision: Precision // what the guess is scored on
+  askMonth: boolean // whether the guess form asks for a month; true for some year-scored rounds too (see era.ts)
   answer: MapDate
   map: RoundMap
 }
 
-// One file per play day in data/puzzles/<YYYY-MM-DD>.json, the same for every player.
-// Contains the answers, so it is never served as-is.
+// One static file per play day, puzzles/<YYYY-MM-DD>.json, the same for every player. It includes the answers
+// so the browser can score guesses: anyone determined can read them, which is fine for a casual daily game.
 export interface DailyPuzzle {
   day: string
   sources: string[]

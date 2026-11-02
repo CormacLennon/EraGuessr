@@ -14,5 +14,5 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true
   },
-  "include": ["server/src", "scripts"]
+  "include": ["shared", "scripts"]
 }

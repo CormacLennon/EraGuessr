@@ -1,0 +1,52 @@
+# Builds the site and publishes it to GitHub Pages with the puzzles for yesterday, today and tomorrow (UTC).
+# Runs daily just after midnight UTC, on every push to master, and on demand.
+name: Deploy
+
+on:
+  push:
+    branches: [master]
+  schedule:
+    # Scheduled runs can start late, so each deploy also includes tomorrow's puzzle: the new day's maps are
+    # already live at midnight even if this run is delayed.
+    - cron: '5 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Generate puzzles
+        run: npm run puzzles:generate -- "$(date -u -d yesterday +%F)" 3 client/dist/puzzles
+      - name: Test scoring and the generated puzzles
+        run: npm test
+        env:
+          PUZZLE_DIR: client/dist/puzzles
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: client/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

@@ -1,8 +1,11 @@
 // Simplifies the raw datasets once (run convert-ohm first):
-//   data/cliopatria.simplified.geojson  polities from 1 AD on (input to generate-puzzles)
-//   data/ohm.simplified.geojson         OHM dated countries, simplified to ~12 km since its coastlines are very detailed
+//   data/source/cliopatria.simplified.geojson.gz  polities from 1 AD on (input to generate-puzzles)
+//   data/source/ohm.simplified.geojson.gz         OHM dated countries, simplified to ~12 km since its coastlines are very detailed
+// The two sources are committed, so the daily build only needs this repository.
 //   client/public/land.geojson          land underlay so unclaimed territory doesn't look like ocean
 // Needs a large heap for the OHM file: node --max-old-space-size=12000 scripts/prepare-data.ts [rawDir] [simplify]
+import { readFile, rm, writeFile } from 'node:fs/promises'
+import { gzipSync } from 'node:zlib'
 import mapshaper from 'mapshaper'
 
 const RAW_DIR = process.argv[2] ?? 'data/raw'
@@ -28,3 +31,9 @@ await mapshaper.runCommands(
     `-simplify 30% keep-shapes ` +
     `-o client/public/land.geojson precision=0.01 force`,
 )
+
+for (const name of ['cliopatria', 'ohm']) {
+  const plain = `data/${name}.simplified.geojson`
+  await writeFile(`data/source/${name}.simplified.geojson.gz`, gzipSync(await readFile(plain), { level: 9 }))
+  await rm(plain)
+}

@@ -3,17 +3,17 @@
   "private": true,
   "type": "module",
   "workspaces": [
-    "client",
-    "server"
+    "client"
   ],
   "scripts": {
     "data:fetch": "node scripts/fetch-data.ts",
     "data:prepare": "node --max-old-space-size=12000 scripts/prepare-data.ts",
     "puzzles:generate": "node --max-old-space-size=8192 scripts/generate-puzzles.ts",
-    "dev:client": "npm --workspace client run dev",
-    "dev:server": "npm --workspace server run dev",
     "typecheck": "tsc -p tsconfig.json && npm --workspace client run build",
-    "data:convert": "node --max-old-space-size=8192 scripts/convert-ohm.ts"
+    "data:convert": "node --max-old-space-size=8192 scripts/convert-ohm.ts",
+    "dev": "npm --workspace client run dev",
+    "build": "npm --workspace client run build",
+    "test": "node --test tests/*.test.ts"
   },
   "devDependencies": {
     "@types/node": "24.19.2",

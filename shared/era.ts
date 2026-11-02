@@ -9,8 +9,16 @@ export interface MapDate {
   month?: number // 1-12, present only for month-precision dates
 }
 
+// Maps this many years before the cutoff also ask for a month, unscored, so that seeing the month field
+// doesn't tell the player the map is from MONTH_PRECISION_FROM_YEAR or later.
+export const UNSCORED_MONTH_LEAD_YEARS = 30
+
 export function precisionFor(year: number, sourceHasMonths: boolean): Precision {
   return sourceHasMonths && year >= MONTH_PRECISION_FROM_YEAR ? 'month' : 'year'
+}
+
+export function asksForMonth(year: number, sourceHasMonths: boolean): boolean {
+  return sourceHasMonths && year >= MONTH_PRECISION_FROM_YEAR - UNSCORED_MONTH_LEAD_YEARS
 }
 
 // Signed difference in the round's own unit (years or months): positive means the answer is later than the guess.

@@ -26,4 +26,4 @@ dist-ssr
 # Data: raw downloads, intermediates and generated puzzles (contain answers)
 data/raw
 data/*.geojson
-data/puzzles
+client/public/puzzles

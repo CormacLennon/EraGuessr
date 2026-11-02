@@ -1,29 +1,22 @@
 import 'maplibre-gl/dist/maplibre-gl.css'
 import './style.css'
-import { AttributionControl, Map as MapLibreMap, NavigationControl, type GeoJSONSource, type GeoJSONSourceSpecification } from 'maplibre-gl'
+import { AttributionControl, Map as MapLibreMap, NavigationControl, setWorkerUrl, type GeoJSONSource, type GeoJSONSourceSpecification } from 'maplibre-gl'
+import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url'
+import { score, type MapDate, type Precision, type Score } from '../../shared/era.ts'
+import type { DailyPuzzle, FeatureCollection } from '../../shared/puzzle.ts'
 
-type Precision = 'year' | 'month'
 type MapData = GeoJSONSourceSpecification['data']
 
-interface MapDate {
-  year: number
-  month?: number
-}
-
-interface DailyResponse {
-  day: string
-  minYear: number
-  maxYear: number
-  rounds: { precision: Precision; map: { polities: MapData; groups: MapData; labels: MapData } }[]
-}
-
-interface RoundResult {
+interface RoundResult extends Score {
   guess: MapDate
   answer: MapDate
-  direction: 'correct' | 'earlier' | 'later'
-  off: number
-  points: number
 }
+
+// MapLibre finds its worker relative to its own module, which a production build moves; point it at the copied file.
+setWorkerUrl(workerUrl)
+
+// Everything is served as static files next to index.html (GitHub Pages), so paths are relative to the page.
+const asset = (path: string) => `${new URL(import.meta.env.BASE_URL, location.href).href}${path}`
 
 const EMPTY: MapData = { type: 'FeatureCollection', features: [] }
 
@@ -136,7 +129,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <h2 id="intro-title">EraGuessr</h2>
   <p>Every day, everyone gets the same 5 world maps, each from a moment between 1 AD and 2024.</p>
   <ul>
-    <li>Guess the year each map shows. Maps from 1886 on ask for the month too.</li>
+    <li>Guess the year each map shows. More recent maps ask for the month too, and from 1886 on it counts.</li>
     <li>One guess per map. Up to 1,000 points each: the closer, the more you score.</li>
     <li>Zoom and pan to look for clues in the borders and names.</li>
     <li>New maps every day at midnight UTC.</li>
@@ -214,11 +207,34 @@ document.querySelector<HTMLButtonElement>('#share-button')!.addEventListener('cl
   }
 })
 
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, init)
-  const body = await response.json()
-  if (!response.ok) throw new Error(body.error ?? `Request failed (${response.status})`)
-  return body as T
+const todayUtc = () => new Date().toISOString().slice(0, 10)
+
+// Dev only (npm run dev): ?day=YYYY-MM-DD plays that day's puzzle, ?reset clears its saved progress first.
+const devParams = new URLSearchParams(import.meta.env.DEV ? location.search : '')
+const devDay = devParams.get('day')
+const puzzleDay = () => (devDay && /^\d{4}-\d{2}-\d{2}$/.test(devDay) ? devDay : todayUtc())
+
+// Puzzle files from before askMonth existed only asked for a month on month-scored rounds.
+const asksMonth = (round: DailyPuzzle['rounds'][number]) => round.askMonth ?? round.precision === 'month'
+
+// Today's puzzle file, built and published by the daily GitHub Action (see .github/workflows/deploy.yml).
+async function loadPuzzle(): Promise<DailyPuzzle> {
+  const response = await fetch(asset(`puzzles/${puzzleDay()}.json`), { cache: 'no-cache' })
+  if (response.status === 404) throw new Error("Today's maps aren't out yet. Check back in a few minutes.")
+  if (!response.ok) throw new Error(`Couldn't load today's maps (${response.status})`)
+  return (await response.json()) as DailyPuzzle
+}
+
+// Whole numbers in range only; the input's min/max catch most of this, but not every browser enforces them.
+function parseGuess(data: FormData, puzzle: DailyPuzzle, askMonth: boolean): MapDate {
+  const year = Number(data.get('year'))
+  if (!Number.isInteger(year) || year < puzzle.minYear || year > puzzle.maxYear) {
+    throw new Error(`Enter a whole year from ${puzzle.minYear} to ${puzzle.maxYear}`)
+  }
+  if (!askMonth) return { year }
+  const month = Number(data.get('month'))
+  if (!Number.isInteger(month) || month < 1 || month > 12) throw new Error('Pick a month')
+  return { year, month }
 }
 
 function createMap(): Promise<MapLibreMap> {
@@ -231,9 +247,9 @@ function createMap(): Promise<MapLibreMap> {
     style: {
       version: 8,
       // Self-hosted Noto Sans glyphs (SIL OFL); CJK falls back to the viewer's local fonts.
-      glyphs: `${location.origin}/fonts/{fontstack}/{range}.pbf`,
+      glyphs: asset('fonts/{fontstack}/{range}.pbf'),
       sources: {
-        land: { type: 'geojson', data: '/land.geojson' },
+        land: { type: 'geojson', data: asset('land.geojson') },
         polities: { type: 'geojson', data: EMPTY },
         groups: { type: 'geojson', data: EMPTY },
         labels: { type: 'geojson', data: EMPTY },
@@ -311,7 +327,8 @@ function describe(result: RoundResult, precision: Precision): string {
 }
 
 async function start() {
-  const daily = await api<DailyResponse>('/api/daily')
+  const daily = await loadPuzzle()
+  if (devParams.has('reset')) saveResults(daily.day, [])
   const results = loadResults(daily.day)
   const map = await createMap()
   const source = (id: string) => map.getSource<GeoJSONSource>(id)!
@@ -346,32 +363,29 @@ async function start() {
       if (!intro.open) resultsDialog.showModal()
       return
     }
-    const { precision, map: layers } = daily.rounds[index]
-    source('polities').setData(layers.polities)
-    source('groups').setData(layers.groups)
-    source('labels').setData(layers.labels)
-    monthField.hidden = precision !== 'month'
+    const round = daily.rounds[index]
+    const { map: layers } = round
+    // The puzzle file is plain GeoJSON; its shared type just leaves geometry untyped.
+    const geojson = (layer: FeatureCollection) => layer as unknown as Exclude<MapData, string>
+    source('polities').setData(geojson(layers.polities))
+    source('groups').setData(geojson(layers.groups))
+    source('labels').setData(geojson(layers.labels))
+    monthField.hidden = !asksMonth(round)
     progress.textContent = `Map ${index + 1}/${rounds}`
-    prompt.textContent = precision === 'month' ? 'When is this map from? Guess the month and year.' : 'When is this map from? Guess the year.'
+    prompt.textContent = asksMonth(round) ? 'When is this map from? Guess the month and year.' : 'When is this map from? Guess the year.'
     status.textContent = ''
     form.reset()
     form.hidden = false
   }
 
-  form.addEventListener('submit', async (event) => {
+  form.addEventListener('submit', (event) => {
     event.preventDefault()
     const index = results.length
-    const { precision } = daily.rounds[index]
-    const data = new FormData(form)
-    const guess: MapDate = { year: Number(data.get('year')) }
-    if (precision === 'month') guess.month = Number(data.get('month'))
+    const { precision, answer } = daily.rounds[index]
+    const askMonth = asksMonth(daily.rounds[index])
     try {
-      const result = await api<Omit<RoundResult, 'guess'>>(`/api/daily/${daily.day}/${index}/guess`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(guess),
-      })
-      results.push({ ...result, guess })
+      const guess = parseGuess(new FormData(form), daily, askMonth)
+      results.push({ ...score(answer, guess, precision), guess, answer })
       saveResults(daily.day, results)
       renderHistory()
       form.hidden = true

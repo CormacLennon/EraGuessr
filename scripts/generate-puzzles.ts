@@ -2,16 +2,19 @@
 //   Before OHM_FROM_YEAR: Cliopatria only, year precision.
 //   From OHM_FROM_YEAR:   OpenHistoricalMap countries, with Cliopatria filling areas OHM doesn't cover.
 //                         Month precision from MONTH_PRECISION_FROM_YEAR, since OHM dates go down to the day.
-// Usage: node --max-old-space-size=8192 scripts/generate-puzzles.ts [startDay=today UTC] [days=30]
+// Usage: node --max-old-space-size=8192 scripts/generate-puzzles.ts [startDay=today UTC] [days=30] [outDir=client/public/puzzles]
 import { createHash } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { gunzipSync } from 'node:zlib'
 import mapshaper from 'mapshaper'
-import { precisionFor, type MapDate } from '../server/src/era.ts'
-import { ROUNDS_PER_DAY, type DailyPuzzle, type FeatureCollection, type Round, type RoundMap } from '../server/src/puzzle.ts'
+import { asksForMonth, MONTH_PRECISION_FROM_YEAR, precisionFor, type MapDate } from '../shared/era.ts'
+import { stripDates } from '../shared/labels.ts'
+import { weightedYear } from '../shared/sampling.ts'
+import { ROUNDS_PER_DAY, type DailyPuzzle, type FeatureCollection, type Round, type RoundMap } from '../shared/puzzle.ts'
 
-const CLIOPATRIA_FILE = 'data/cliopatria.simplified.geojson'
-const OHM_FILE = 'data/ohm.simplified.geojson'
-const OUT_DIR = 'data/puzzles'
+// Simplified sources, committed gzipped so the daily build doesn't need the raw downloads (see prepare-data).
+const CLIOPATRIA_FILE = 'data/source/cliopatria.simplified.geojson.gz'
+const OHM_FILE = 'data/source/ohm.simplified.geojson.gz'
 const MIN_YEAR = 1
 const MAX_YEAR = 2024 // Cliopatria ends in 2024
 const OHM_FROM_YEAR = 1825
@@ -20,6 +23,7 @@ const COLOURS = ['#c9a66b', '#a3b18a', '#d4a5a5', '#9fb4c7', '#e0c58f', '#b5a1c9
 
 const startDay = process.argv[2] ?? new Date().toISOString().slice(0, 10)
 const days = Number(process.argv[3] ?? 30)
+const OUT_DIR = process.argv[4] ?? 'client/public/puzzles'
 if (!/^\d{4}-\d{2}-\d{2}$/.test(startDay) || !Number.isInteger(days) || days < 1) {
   throw new Error('Usage: generate-puzzles.ts [YYYY-MM-DD] [days]')
 }
@@ -32,8 +36,8 @@ interface Feature<P> {
 type CliopatriaFeature = Feature<{ Name: string; FromYear: number; ToYear: number; MemberOf: string }>
 type OhmFeature = Feature<{ Name: string; Start: string; End: string }>
 
-const cliopatria: CliopatriaFeature[] = JSON.parse(await readFile(CLIOPATRIA_FILE, 'utf8')).features
-const ohm: OhmFeature[] = JSON.parse(await readFile(OHM_FILE, 'utf8')).features
+const cliopatria: CliopatriaFeature[] = JSON.parse(gunzipSync(await readFile(CLIOPATRIA_FILE)).toString('utf8')).features
+const ohm: OhmFeature[] = JSON.parse(gunzipSync(await readFile(OHM_FILE)).toString('utf8')).features
 
 // Deterministic per day, so regenerating gives the same puzzles.
 function seededInt(day: string, attempt: number, salt: string, modulo: number): number {
@@ -42,7 +46,7 @@ function seededInt(day: string, attempt: number, salt: string, modulo: number): 
 
 const collection = (features: Feature<object>[]): FeatureCollection => ({ type: "FeatureCollection", features: features as FeatureCollection["features"] })
 const named = <P extends { Name: string }>(f: Feature<P>, name = f.properties.Name) =>
-  ({ type: 'Feature' as const, properties: { name }, geometry: f.geometry })
+  ({ type: 'Feature' as const, properties: { name: stripDates(name) }, geometry: f.geometry })
 
 // Cliopatria marks umbrella entities with parentheses, e.g. "(Holy Roman Empire)" around its member states.
 const isGroup = (f: CliopatriaFeature) => f.properties.Name.startsWith('(')
@@ -125,15 +129,22 @@ for (let i = 0; i < days; i++) {
   const rounds: Round[] = []
   const used = new Set<number>()
   for (let attempt = 0; rounds.length < ROUNDS_PER_DAY; attempt++) {
-    const year = MIN_YEAR + seededInt(day, attempt, 'year', MAX_YEAR - MIN_YEAR + 1)
+    // The first pick is always from MONTH_PRECISION_FROM_YEAR on, so every day has at least one modern,
+    // month-scored map; the shuffle below hides which one it is.
+    const from = rounds.length === 0 ? MONTH_PRECISION_FROM_YEAR : MIN_YEAR
+    const year = weightedYear(seededInt(day, attempt, 'year', 2 ** 32) / 2 ** 32, from, MAX_YEAR)
     if (used.has(year)) continue
-    const precision = precisionFor(year, year >= OHM_FROM_YEAR)
+    const hasMonths = year >= OHM_FROM_YEAR
+    const precision = precisionFor(year, hasMonths)
     const answer: MapDate = precision === 'month' ? { year, month: 1 + seededInt(day, attempt, 'month', 12) } : { year }
     const map = await buildMap(answer)
     if (map.polities.features.length < MIN_POLITIES) continue
     used.add(year)
-    rounds.push({ precision, answer, map })
+    rounds.push({ precision, askMonth: asksForMonth(year, hasMonths), answer, map })
   }
+  // Deterministic shuffle: order by a per-day hash of each round's year.
+  const order = (round: Round) => seededInt(day, round.answer.year, 'order', 2 ** 32)
+  rounds.sort((a, b) => order(a) - order(b))
 
   const puzzle: DailyPuzzle = {
     day,
