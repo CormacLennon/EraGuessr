@@ -33,3 +33,21 @@ body {
   flex-direction: column;
   gap: 0.25rem;
 }
+
+#share {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-top: 1rem;
+}
+
+#share[hidden] {
+  display: none;
+}
+
+#share-text {
+  font: inherit;
+  resize: none;
+  width: 16rem;
+}

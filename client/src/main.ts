@@ -30,6 +30,25 @@ const EMPTY: MapData = { type: 'FeatureCollection', features: [] }
 const monthName = (month: number) => new Date(2000, month - 1).toLocaleString('en', { month: 'long' })
 const formatDate = (d: MapDate) => (d.month ? `${monthName(d.month)} ${d.year}` : `${d.year}`)
 
+const SHARE_URL = 'www.EraGuessr.com'
+
+// Rating by points (0-1000). With the 50-year scoring half-life these are roughly within
+// 8, 37, 87 and 166 years of the answer.
+const RATINGS = [
+  { minPoints: 900, emoji: '🧠' },
+  { minPoints: 600, emoji: '🤓' },
+  { minPoints: 300, emoji: '🆗' },
+  { minPoints: 100, emoji: '🫪' },
+  { minPoints: 0, emoji: '💩' },
+]
+
+const ratingEmoji = (points: number) => RATINGS.find((r) => points >= r.minPoints)!.emoji
+
+function shareText(results: RoundResult[], total: number): string {
+  const points = results.reduce((sum, r) => sum + r.points, 0)
+  return `${results.map((r) => ratingEmoji(r.points)).join('')}\nScore: ${points}/${total * 1000}\n${SHARE_URL}`
+}
+
 // Progress is kept only in this browser (no cookies, nothing sent to the server). Storage can be unavailable,
 // e.g. in private windows, in which case the game still works but forgets progress on reload.
 const storageKey = (day: string) => `eraguessr:${day}`
@@ -71,6 +90,11 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   </form>
   <p id="status" role="status"></p>
   <button id="next" type="button" hidden>Next map</button>
+  <div id="share" hidden>
+    <textarea id="share-text" readonly rows="3" aria-label="Your score to share"></textarea>
+    <button id="share-button" type="button">Copy score</button>
+    <span id="share-status" role="status"></span>
+  </div>
   <ol id="history"></ol>
 </main>
 `
@@ -82,6 +106,20 @@ const yearInput = form.querySelector<HTMLInputElement>('input[name=year]')!
 const status = document.querySelector<HTMLParagraphElement>('#status')!
 const nextButton = document.querySelector<HTMLButtonElement>('#next')!
 const history = document.querySelector<HTMLOListElement>('#history')!
+const share = document.querySelector<HTMLDivElement>('#share')!
+const shareTextArea = document.querySelector<HTMLTextAreaElement>('#share-text')!
+const shareStatus = document.querySelector<HTMLSpanElement>('#share-status')!
+
+document.querySelector<HTMLButtonElement>('#share-button')!.addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(shareTextArea.value)
+    shareStatus.textContent = 'Copied!'
+  } catch {
+    // Clipboard access can be blocked (e.g. insecure context); leave the text selected to copy by hand.
+    shareTextArea.select()
+    shareStatus.textContent = 'Press Ctrl+C (or ⌘C) to copy'
+  }
+})
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init)
@@ -166,7 +204,7 @@ function describe(result: RoundResult, precision: Precision): string {
   const miss = result.direction === 'correct'
     ? 'spot on!'
     : `${result.off} ${unit}${result.off === 1 ? '' : 's'} ${result.direction === 'later' ? 'too early' : 'too late'}`
-  return `You said ${formatDate(result.guess)}, it was ${formatDate(result.answer)}: ${miss} +${result.points} points`
+  return `${ratingEmoji(result.points)} You said ${formatDate(result.guess)}, it was ${formatDate(result.answer)}: ${miss} +${result.points} points`
 }
 
 async function start() {
@@ -196,6 +234,8 @@ async function start() {
       form.hidden = true
       prompt.textContent = `That's today's ${total} maps done.`
       status.textContent = `Total: ${points} of ${total * 1000} points. New maps tomorrow (UTC).`
+      shareTextArea.value = shareText(results, total)
+      share.hidden = false
       return
     }
     const { precision, map: layers } = daily.rounds[index]
