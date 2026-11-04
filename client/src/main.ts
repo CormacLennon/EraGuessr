@@ -23,7 +23,7 @@ const EMPTY: MapData = { type: 'FeatureCollection', features: [] }
 const monthName = (month: number) => new Date(2000, month - 1).toLocaleString('en', { month: 'long' })
 const formatDate = (d: MapDate) => (d.month ? `${monthName(d.month)} ${d.year}` : `${d.year}`)
 
-const SHARE_URL = 'EraGuessr.fun'
+const SHARE_URL = 'https://www.eraguessr.fun'
 
 // Rating by points (0-1000). With the 50-year scoring half-life these are roughly within
 // 8, 37, 87 and 166 years of the answer.
